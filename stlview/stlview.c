@@ -22,6 +22,7 @@
  */
 
 #include <stdlib.h>
+#include <math.h>
 #include "loax/loax_client.h"
 #include "loax/loax_gl2.h"
 #include "loax/gl2.h"
@@ -52,7 +53,7 @@ static const char* VSHADER =
 	"	float ndotlp = dot(nm_normal, light_position);\n"
 	"	if(ndotlp > 0.0)\n"
 	"	{\n"
-	"		vec4 diffuse  = vec4(ndotlp, ndotlp, ndotlp, 0.0);\n"
+	"		vec4 diffuse  = 0.8*vec4(ndotlp, ndotlp, ndotlp, 0.0);\n"
 	"		varying_color = color * (ambient + diffuse);\n"
 	"	}\n"
 	"	else\n"
@@ -75,6 +76,12 @@ static const char* FSHADER =
 	"	gl_FragColor = varying_color;\n"
 	"}\n";
 
+// camera
+float g_rfactor = 5.0f;   // radius scaling factor
+float g_sfactor = 5.0f;   // stereo disperity in degrees
+float g_theta   = 180.0f;
+float g_phi     = 0.0f;
+
 // geometry
 GLsizei g_ec;
 GLuint  g_vid;
@@ -87,6 +94,60 @@ GLint  g_attribute_normal;
 GLint  g_uniform_color;
 GLint  g_uniform_nm;
 GLint  g_uniform_mvp;
+
+static void draw(int w, int h, float s, stl_model_t* model)
+{
+	// transforms
+	a3d_mat4f_t pm;
+	a3d_mat4f_t mvm;
+	a3d_mat4f_t mvp;
+	a3d_mat3f_t nm;
+	if(h > w)
+	{
+		GLfloat a = (GLfloat) h / (GLfloat) w;
+		a3d_mat4f_frustum(&pm, 1, -1.0f, 1.0f, -a, a,
+		                  0.1f*model->radius, 100.0f*model->radius);
+	}
+	else
+	{
+		GLfloat a = (GLfloat) w / (GLfloat) h;
+		a3d_mat4f_frustum(&pm, 1, -a, a, -1.0f, 1.0f,
+		                  0.1f*model->radius, 100.0f*model->radius);
+	}
+
+	float r     = g_rfactor*model->radius;
+	float theta = (g_theta + s*g_sfactor)*M_PI/180.0f;
+	float phi   = g_phi*M_PI/180.0f;
+	float dx    = r*cosf(theta)*cosf(phi);
+	float dy    = r*sinf(theta)*cosf(phi);
+	float dz    = r*sinf(phi);
+	a3d_mat4f_lookat(&mvm, 1,
+	                 model->center.x + dx,
+	                 model->center.y + dy,
+	                 model->center.z + dz,
+	                 model->center.x,
+	                 model->center.y,
+	                 model->center.z,
+	                 0.0f, 0.0f, 1.0f);
+	a3d_mat4f_mulm_copy(&pm, &mvm, &mvp);
+	a3d_mat4f_normalmatrix(&mvm, &nm);
+
+	// draw stl model
+	a3d_vec4f_t color = { 1.0f, 1.0f, 1.0f, 1.0f };
+	glUseProgram(g_program);
+	glEnableVertexAttribArray(g_attribute_vertex);
+	glEnableVertexAttribArray(g_attribute_normal);
+	glUniform4fv(g_uniform_color, 1, (GLfloat*) &color);
+	glUniformMatrix3fv(g_uniform_nm, 1, GL_FALSE, (GLfloat*) &nm);
+	glUniformMatrix4fv(g_uniform_mvp, 1, GL_FALSE, (GLfloat*) &mvp);
+	glBindBuffer(GL_ARRAY_BUFFER, g_vid);
+	glVertexAttribPointer(g_attribute_vertex, 3, GL_FLOAT, GL_FALSE, 0, 0);
+	glBindBuffer(GL_ARRAY_BUFFER, g_nid);
+	glVertexAttribPointer(g_attribute_normal, 3, GL_FLOAT, GL_FALSE, 0, 0);
+	glDrawArrays(GL_TRIANGLES, 0, g_ec);
+	glDisableVertexAttribArray(g_attribute_normal);
+	glDisableVertexAttribArray(g_attribute_vertex);
+}
 
 int main(int argc, char** argv)
 {
@@ -140,62 +201,111 @@ int main(int argc, char** argv)
 		g_uniform_nm       = glGetUniformLocation(g_program, "nm");
 		g_uniform_mvp      = glGetUniformLocation(g_program, "mvp");
 
+		int stereo = 1;
 		do
 		{
 			loax_event_t e;
 			while(loax_client_poll(c, &e))
 			{
-				// ignore events
+				if(e.type == LOAX_EVENT_KEYUP)
+				{
+					if(e.event_key.keycode == 't')
+					{
+						stereo = 1 - stereo;
+					}
+					else if(e.event_key.keycode == 'a')
+					{
+						g_theta -= 5.0f;
+						if(g_theta < 0.0f)
+						{
+							g_theta += 360.0f;
+						}
+					}
+					else if(e.event_key.keycode == 'd')
+					{
+						g_theta += 5.0f;
+						if(g_theta >= 360.0f)
+						{
+							g_theta -= 360.0f;
+						}
+					}
+					else if(e.event_key.keycode == 'w')
+					{
+						g_phi += 5.0f;
+						if(g_phi > 85.0f)
+						{
+							g_phi = 85.0f;
+						}
+					}
+					else if(e.event_key.keycode == 's')
+					{
+						g_phi -= 5.0f;
+						if(g_phi < -85.0f)
+						{
+							g_phi = -85.0f;
+						}
+					}
+					else if(e.event_key.keycode == 'j')
+					{
+						g_rfactor -= 0.5f;
+						if(g_rfactor < -0.5f)
+						{
+							g_rfactor = 0.5f;
+						}
+					}
+					else if(e.event_key.keycode == 'k')
+					{
+						g_rfactor += 0.5f;
+						if(g_rfactor > 10.0f)
+						{
+							g_rfactor = 10.0f;
+						}
+					}
+					else if(e.event_key.keycode == '[')
+					{
+						g_sfactor -= 0.5f;
+						if(g_sfactor < -0.5f)
+						{
+							g_sfactor = 0.5f;
+						}
+					}
+					else if(e.event_key.keycode == ']')
+					{
+						g_sfactor += 0.5f;
+						if(g_sfactor > 10.0f)
+						{
+							g_sfactor = 10.0f;
+						}
+					}
+				}
 			}
 
 			loax_client_size(c, &w, &h);
-			glViewport(0, 0, w, h);
 			glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-			// transforms
-			a3d_mat4f_t pm;
-			a3d_mat4f_t mvm;
-			a3d_mat4f_t mvp;
-			a3d_mat3f_t nm;
-			if(h > w)
+			if(stereo)
 			{
-				GLfloat a = (GLfloat) h / (GLfloat) w;
-				a3d_mat4f_frustum(&pm, 1, -1.0f, 1.0f, -a, a,
-				                  0.1f*model->radius, 10.0f*model->radius);
+				glEnable(GL_SCISSOR_TEST);
+
+				// draw left
+				int w2 = w/2;
+				glViewport(0, 0, w2, h);
+				glScissor(0, 0, w2, h);
+				draw(w2, h, -1.0f, model);
+
+				// draw right
+				glViewport(w2, 0, w2, h);
+				glScissor(w2, 0, w2, h);
+				draw(w/2, h, 1.0f, model);
+
+				glDisable(GL_SCISSOR_TEST);
 			}
 			else
 			{
-				GLfloat a = (GLfloat) w / (GLfloat) h;
-				a3d_mat4f_frustum(&pm, 1, -a, a, -1.0f, 1.0f,
-				                  0.1f*model->radius, 10.0f*model->radius);
+				glViewport(0, 0, w, h);
+				draw(w, h, 0.0f, model);
 			}
-			a3d_mat4f_lookat(&mvm, 1,
-			                 model->center.x - 3.5f*model->radius,
-			                 model->center.y - 3.5f*model->radius,
-			                 model->center.z + 2.0f*model->radius,
-			                 model->center.x,
-			                 model->center.y,
-			                 model->center.z,
-			                 0.0f, 0.0f, 1.0f);
-			a3d_mat4f_mulm_copy(&pm, &mvm, &mvp);
-			a3d_mat4f_normalmatrix(&mvm, &nm);
-
-			// draw stl model
-			a3d_vec4f_t color = { 1.0f, 1.0f, 1.0f, 1.0f };
-			glUseProgram(g_program);
-			glEnableVertexAttribArray(g_attribute_vertex);
-			glEnableVertexAttribArray(g_attribute_normal);
-			glUniform4fv(g_uniform_color, 1, (GLfloat*) &color);
-			glUniformMatrix3fv(g_uniform_nm, 1, GL_FALSE, (GLfloat*) &nm);
-			glUniformMatrix4fv(g_uniform_mvp, 1, GL_FALSE, (GLfloat*) &mvp);
-			glBindBuffer(GL_ARRAY_BUFFER, g_vid);
-			glVertexAttribPointer(g_attribute_vertex, 3, GL_FLOAT, GL_FALSE, 0, 0);
-			glBindBuffer(GL_ARRAY_BUFFER, g_nid);
-			glVertexAttribPointer(g_attribute_normal, 3, GL_FLOAT, GL_FALSE, 0, 0);
-			glDrawArrays(GL_TRIANGLES, 0, g_ec);
-			glDisableVertexAttribArray(g_attribute_normal);
-			glDisableVertexAttribArray(g_attribute_vertex);
 		} while(loax_client_swapbuffers(c));
 
 		glDeleteProgram(g_program);
